@@ -15,17 +15,18 @@ import (
 // Manager wraps go-workers2 Manager with Sidekiq 7.3 Web UI compatibility
 type Manager struct {
 	*workers.Manager
-	producer    *workers.Producer
-	busyWorkers int32
-	processID   string
-	redisAddr   string
-	sentinel    bool
-	redisDB     int
-	concurrency int32
-	queues      []string
-	tag         string
-	namespace   string
-	stopCh      chan struct{}
+	producer     *workers.Producer
+	busyWorkers  int32
+	processID    string
+	redisAddr    string
+	sentinel     bool
+	redisDB      int
+	concurrency  int32
+	queues       []string
+	tag          string
+	namespace    string
+	drainTimeout time.Duration
+	stopCh       chan struct{}
 
 	sentinelAddrs   []string
 	redisMasterName string
@@ -46,9 +47,14 @@ type Options struct {
 	RedisTLSConfig  *tls.Config
 	RedisDB         int
 	PoolSize        int
-	Namespace       string   // prefixes all Redis keys this manager creates/reads directly
-	Tag             string   // Optional tag for process identification
-	Queues          []string // List of queues this process handles
+	Namespace       string // prefixes all Redis keys this manager creates/reads directly
+	// DrainTimeout bounds how long Stop() will wait for in-flight jobs to
+	// finish before giving up. Defaults to 25 seconds if unset. Set this
+	// slightly shorter than whatever grace period your deploy environment
+	// (Docker/Kubernetes) gives you before sending SIGKILL.
+	DrainTimeout time.Duration
+	Tag          string   // Optional tag for process identification
+	Queues       []string // List of queues this process handles
 }
 
 // NewManager creates a new Sidekiq 7.3 compatible manager.
@@ -123,7 +129,27 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	m.startHeartbeat()
+	if m.drainTimeout <= 0 {
+		m.drainTimeout = 25 * time.Second // sensible default if caller doesn't set one
+	}
 
+	// Registers a drain hook with the embedded go-workers2 Manager. Its own
+	// Stop() documents that it "returns immediately" — it signals workers
+	// to quit but does NOT wait for in-flight jobs to finish. Without this
+	// hook, a caller's SIGTERM handler calling Stop() would get a false
+	// sense of having shut down cleanly, while a job that was actively
+	// mid-execution at that moment is simply abandoned. This hook makes
+	// Stop() actually block (up to drainTimeout) until busyWorkers reaches
+	// zero, using go-workers2's own AddDuringDrainHooks extension point.
+	m.AddDuringDrainHooks(func() {
+		deadline := time.Now().Add(m.drainTimeout)
+		for atomic.LoadInt32(&m.busyWorkers) > 0 && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if atomic.LoadInt32(&m.busyWorkers) > 0 {
+			fmt.Fprintf(os.Stderr, "gosidekiq7: drain timeout reached after %s with %d job(s) still in-flight — they may be orphaned\n", m.drainTimeout, atomic.LoadInt32(&m.busyWorkers))
+		}
+	})
 	return m, nil
 }
 
@@ -176,6 +202,7 @@ func (m *Manager) registerQueueInRedis(queue string) {
 		fmt.Fprintf(os.Stderr, "gosidekiq7: failed to register queue %s: %v\n", queue, err)
 	}
 }
+
 // Producer returns the producer for enqueueing jobs.
 func (m *Manager) Producer() *workers.Producer {
 	return m.producer
