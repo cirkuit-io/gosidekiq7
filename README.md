@@ -73,6 +73,24 @@ func main() {
 | `Namespace` | Prefixes every key this manager creates/reads. See "Namespacing" below. |
 | `Tag` | Display label shown in Sidekiq::Web's Processes tab. Cosmetic only. |
 | `Queues` | Informational list of queues this process handles. Populated automatically as you call `AddWorker`. |
+markdown
+## Configuration
+
+`Options` fields:
+
+| Field | Description |
+|---|---|
+| `RedisAddr` | Direct Redis connection (`host:port`). Use this OR `SentinelAddrs`. |
+| `SentinelAddrs` | Comma-separated Sentinel addresses, e.g. `"sentinel1:26379,sentinel2:26379"`. |
+| `RedisMasterName` | Required if using Sentinel — the master name your Sentinel config monitors. |
+| `RedisPassword` | Redis auth password, if required. |
+| `RedisTLSConfig` | Optional `*tls.Config` for TLS connections. |
+| `RedisDB` | Redis DB index (0-15). |
+| `PoolSize` | Connection pool size. Defaults to 10. |
+| `Namespace` | Prefixes every key this manager creates/reads. See "Namespacing" below. |
+| `Tag` | Display label shown in Sidekiq::Web's Processes tab. Cosmetic only. |
+| `Queues` | Informational list of queues this process handles. Populated automatically as you call `AddWorker`. |
+| `DrainTimeout` | Bounds how long `Stop()` will wait for in-flight jobs to finish before giving up. Defaults to 25 seconds if unset. go-workers2's own `Stop()` documents that it "returns immediately" without waiting for in-flight jobs — this option registers a drain hook so `Stop()` actually blocks until busy workers reach zero or this timeout elapses, whichever comes first. Set it slightly shorter than whatever grace period your deploy environment (Docker/Kubernetes) gives you before escalating to `SIGKILL`. |
 
 ## Sentinel / high-availability setup
 
